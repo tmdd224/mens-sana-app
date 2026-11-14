@@ -32,18 +32,18 @@ Pour repartir de zéro : arrêter le serveur et supprimer `mens_sana.db`.
 Depuis le dossier `mens-sana` : `python -B -m unittest discover -s tests -v`.
 
 ## Dépôt GitHub
-Ce projet utilise un serveur Python et SQLite. GitHub peut héberger le code et exécuter les tests, mais **GitHub Pages ne peut pas faire tourner l’API Python**. Pour rendre l’application accessible sur Internet, il faudra ensuite un hébergeur compatible Python et une base de données adaptée.
+Le dépôt GitHub exécute les tests automatiquement à chaque push. Le fichier `.gitignore` exclut la base locale, les environnements Python et les fichiers `.env`. Ne versionnez jamais de données réelles ni de secrets.
 
-Depuis la racine `mens-sana-app`, initialisez le dépôt puis reliez-le au dépôt créé sur GitHub :
-```powershell
-git init
-git add .
-git commit -m "Préparer Mens Sana"
-git branch -M main
-git remote add origin https://github.com/VOTRE-COMPTE/VOTRE-DEPOT.git
-git push -u origin main
-```
-Le fichier `.gitignore` exclut la base locale, les environnements Python et les fichiers `.env`. Ne versionnez jamais de données réelles ni de secrets.
+## Mettre en ligne une démo sur Render
+Le dépôt contient un `render.yaml` qui prépare un service web Python gratuit. Pour le créer :
+1. Connectez-vous à Render et choisissez **New > Blueprint**.
+2. Reliez le dépôt GitHub `tmdd224/mens-sana-app` et sélectionnez la branche `main`.
+3. Vérifiez le plan **Free**, puis appliquez le Blueprint. Render construit l’application et lance les tests.
+4. Ouvrez l’adresse `https://mens-sana-demo.onrender.com` affichée dans le tableau de bord Render. Si ce nom est déjà pris, changez le nom du service ; Render fournit gratuitement son sous-domaine `onrender.com`.
+
+Cette configuration active les comptes de démonstration et stocke la base SQLite sous `/tmp`. L’offre gratuite met le service en veille après 15 minutes sans trafic ; le premier accès après la veille peut prendre environ une minute. Le système de fichiers est temporaire : les changements de la démo peuvent disparaître au redémarrage ou au redéploiement. Les visiteurs peuvent modifier les données fictives avec les comptes démo.
+
+**Démo uniquement :** n’entrez aucune vraie donnée personnelle ou de santé. Cette configuration gratuite n’est ni persistante ni adaptée à un service clinique. GitHub Pages ne peut pas exécuter l’API Python.
 
 ## Relations de la base (fichier server.py, SCHEMA)
 Psychologue 1–N Patient (affectation avec historique) · Psychologue N–N Groupe · Psychologue N–N Atelier · Groupe N–N Atelier · Patient N–N Groupe · Patient N–N Atelier · Parent/Parrain/Partenaire N–N Patient (table `liens`, avec consentement) · Médecin 1–N Évaluation, Évaluation N–1 Programme, Programme N–N Psychologue · Rendez-vous N–1 Patient, Psychologue · Séance 1–1 Rendez-vous · Abonnement N–1 Patient · Paiement N–1 Abonnement (payeur : patient, parent, parrain ou partenaire) · Utilisateur N–N Communauté · Journal d'audit.

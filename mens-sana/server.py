@@ -629,10 +629,10 @@ class H(BaseHTTPRequestHandler):
         self.out(404, {'erreur': 'Introuvable'})
 
 if __name__ == '__main__':
-    seed(); port = int(os.environ.get('PORT', 8000))
+    seed(); host = os.environ.get('MENSSANA_HOST', '127.0.0.1'); port = int(os.environ.get('PORT', 8000))
     if DEMO_MODE:
-        print('Mens Sana : http://127.0.0.1:%d  (mode démo local)' % port)
+        print('Mens Sana écoute sur %s:%d  (mode démo)' % (host, port))
         print('Comptes démo : mot de passe commun Demo2026! — ne pas utiliser avec de vraies données.')
     else:
-        print('Mens Sana : http://127.0.0.1:%d  (mode sans données de démonstration)' % port)
-    ThreadingHTTPServer(('127.0.0.1', port), H).serve_forever()
+        print('Mens Sana écoute sur %s:%d  (mode sans données de démonstration)' % (host, port))
+    ThreadingHTTPServer((host, port), H).serve_forever()
