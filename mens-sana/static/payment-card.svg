@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="64" viewBox="0 0 180 64">
+  <rect x="1" y="1" width="178" height="62" rx="14" fill="#ffffff"/>
+  <rect x="18" y="19" width="32" height="27" rx="5" fill="#173866"/>
+  <path d="M18 27h32" stroke="#e9a47e" stroke-width="5"/>
+  <text x="59" y="38" fill="#173866" font-family="Arial,sans-serif" font-size="14" font-weight="700">Carte</text>
+</svg>

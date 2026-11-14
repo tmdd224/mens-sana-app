@@ -18,7 +18,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.abspath(os.environ.get('MENSSANA_DB_PATH', os.path.join(BASE, 'mens_sana.db')))
 ST = os.path.join(BASE, 'static')
 CENTRE = 'Centre Mens Sana, Dakar (adresse à confirmer)'
-FORMULES = {  # prix de démonstration, à fixer après étude de marché
+FORMULES = {
     'normal':  {'label': 'Normal',  'prix': 10000, 'inclus': ['consultations', 'activités']},
     'premium': {'label': 'Premium', 'prix': 25000, 'inclus': ['consultations', 'activités', 'ateliers', 'programmes spéciaux']},
     'famille': {'label': 'Famille', 'prix': 40000, 'inclus': ['consultations', 'activités', 'ateliers', 'programmes spéciaux']}}
@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS paiements(id INTEGER PRIMARY KEY, abonnement_id INTEG
 CREATE TABLE IF NOT EXISTS communautes(id INTEGER PRIMARY KEY, nom TEXT, description TEXT);
 CREATE TABLE IF NOT EXISTS communaute_membres(communaute_id INTEGER, user_id INTEGER, PRIMARY KEY(communaute_id,user_id));
 CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, communaute_id INTEGER, user_id INTEGER, contenu TEXT, date TEXT);
+CREATE TABLE IF NOT EXISTS medecins(id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), specialite TEXT, identifiant_professionnel TEXT);
+CREATE TABLE IF NOT EXISTS medecin_patients(medecin_id INTEGER REFERENCES medecins(id), patient_id INTEGER REFERENCES patients(id), PRIMARY KEY(medecin_id,patient_id));
+CREATE TABLE IF NOT EXISTS evaluations_psy(id INTEGER PRIMARY KEY, rdv_id INTEGER UNIQUE REFERENCES rendez_vous(id), patient_id INTEGER REFERENCES patients(id), psychologue_id INTEGER REFERENCES psychologues(id), observation TEXT, date TEXT);
+CREATE TABLE IF NOT EXISTS appels(id INTEGER PRIMARY KEY, rdv_id INTEGER UNIQUE REFERENCES rendez_vous(id), duree_min INTEGER NOT NULL, statut TEXT NOT NULL, date TEXT NOT NULL, rapporte_par INTEGER REFERENCES users(id), rapport_bref TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS communaute_createurs(communaute_id INTEGER REFERENCES communautes(id), user_id INTEGER REFERENCES users(id), PRIMARY KEY(communaute_id,user_id));
+CREATE TABLE IF NOT EXISTS partenaires(id INTEGER PRIMARY KEY, nom TEXT NOT NULL, type TEXT NOT NULL, description TEXT NOT NULL, logo_url TEXT NOT NULL, site_url TEXT NOT NULL, actif INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id INTEGER, expire REAL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, ts TEXT, user_id INTEGER, action TEXT, cible TEXT);
 """
@@ -93,6 +99,8 @@ def creer_user(email, nom, role, pw, **k):
         x('INSERT INTO patients(user_id,numero,date_naissance,famille) VALUES(?,?,?,?)', (uid, 'MS-%04d' % n, k['naissance'], k.get('famille', '')))
     if role == 'psychologue':
         x('INSERT INTO psychologues(user_id,specialite,annees_exp,langues,bio) VALUES(?,?,?,?,?)', (uid, k.get('specialite', 'Psychologie clinique'), k.get('exp', 1), k.get('langues', 'Français, Wolof'), k.get('bio', '')))
+    if role == 'medecin':
+        x('INSERT INTO medecins(user_id,specialite,identifiant_professionnel) VALUES(?,?,?)', (uid, k.get('specialite', ''), k.get('identifiant_professionnel', '')))
     return uid
 
 def creer_creneaux_demo():
@@ -156,13 +164,41 @@ def seed():
         x('INSERT INTO posts(communaute_id,user_id,contenu,date) VALUES(?,?,?,?)', (cm[c_], U[u], t, plus(-1)))
     creer_creneaux_demo()
 
+def provision_admin():
+    existing_admin = q("SELECT id,email FROM users WHERE role='admin' LIMIT 1", one=True)
+    if existing_admin and (DEMO_MODE or existing_admin['email'].lower() not in DEMO_EMAILS): return
+    email = os.environ.get('MENSSANA_ADMIN_EMAIL', '').strip().lower()
+    name = os.environ.get('MENSSANA_ADMIN_NAME', '').strip()
+    password = os.environ.get('MENSSANA_ADMIN_PASSWORD', '')
+    if not (email or name or password):
+        if existing_admin: raise RuntimeError('Configurez les variables administrateur pour remplacer le compte réservé')
+        return
+    if not email or not name or not password: raise RuntimeError('Configurez MENSSANA_ADMIN_EMAIL, MENSSANA_ADMIN_NAME et MENSSANA_ADMIN_PASSWORD')
+    if not re.match(r'^[^@\s]+@[^@\s]+\.\w+$', email) or len(name) > 120 or len(password) < 14:
+        raise RuntimeError('E-mail administrateur invalide ou mot de passe inférieur à 14 caractères')
+    if not DEMO_MODE and email in DEMO_EMAILS:
+        raise RuntimeError('Choisissez une autre adresse administrateur')
+    conflicting_user = q('SELECT id FROM users WHERE email=?', (email,), True)
+    if conflicting_user and (not existing_admin or conflicting_user['id'] != existing_admin['id']):
+        raise RuntimeError('L’e-mail administrateur est déjà utilisé par un autre rôle')
+    if existing_admin:
+        password_hash, salt = hp(password)
+        x('UPDATE users SET email=?,nom=?,pw=?,salt=?,actif=1 WHERE id=?',
+          (email, name, password_hash, salt, existing_admin['id']))
+        x('DELETE FROM sessions WHERE user_id=?', (existing_admin['id'],))
+        audit({'id': existing_admin['id']}, 'administrateur reconfiguré')
+    else:
+        creer_user(email, name, 'admin', password)
+
 # ---------- droits d'accès ----------
 def pat_of(u): return q('SELECT * FROM patients WHERE user_id=?', (u['id'],), True)
 def psy_of(u): return q('SELECT * FROM psychologues WHERE user_id=?', (u['id'],), True)
 
 def acces(u, pid):
     r = u['role']
-    if r in ('admin', 'medecin'): return True
+    if r == 'admin': return True
+    if r == 'medecin':
+        return bool(q('SELECT 1 FROM medecin_patients mp JOIN medecins m ON m.id=mp.medecin_id WHERE m.user_id=? AND mp.patient_id=?', (u['id'], pid), True))
     if r == 'patient': p = pat_of(u); return bool(p and p['id'] == pid)
     if r == 'psychologue':
         y = psy_of(u); return bool(y and q('SELECT 1 FROM assignments WHERE patient_id=? AND psy_id=? AND fin IS NULL', (pid, y['id']), True))
@@ -202,11 +238,11 @@ def exige(pid, service):
     a = abo(pid)
     if not a or service not in a['inclus']: raise Err('Votre abonnement ne couvre pas ce service : « %s ». Voir l’onglet Abonnement.' % service, 402)
 
-def suivi(pid):
+def suivi(pid, clinique=True):
     return {'rdv': q('SELECT r.id,r.date_heure,r.mode,r.lieu,r.statut,u.nom psy FROM rendez_vous r JOIN psychologues y ON y.id=r.psy_id JOIN users u ON u.id=y.user_id WHERE r.patient_id=? ORDER BY r.date_heure DESC', (pid,)),
             'ateliers': q('SELECT a.titre,a.type,a.date_heure FROM atelier_inscriptions i JOIN ateliers a ON a.id=i.atelier_id WHERE i.patient_id=? ORDER BY a.date_heure', (pid,)),
             'groupes': q('SELECT g.nom FROM groupe_membres m JOIN groupes g ON g.id=m.groupe_id WHERE m.patient_id=?', (pid,)),
-            'evaluations': q('SELECT e.date,e.etat,p.nom programme FROM evaluations e LEFT JOIN programmes p ON p.id=e.programme_id WHERE e.patient_id=? ORDER BY e.id DESC', (pid,)),
+            'evaluations': q('SELECT e.date,e.etat,p.nom programme FROM evaluations e LEFT JOIN programmes p ON p.id=e.programme_id WHERE e.patient_id=? ORDER BY e.id DESC', (pid,)) if clinique else [],
             'abonnement': abo(pid)}
 
 def fiche(u, pid):
@@ -215,8 +251,11 @@ def fiche(u, pid):
     if u['role'] not in ('psychologue', 'medecin', 'patient', 'parent'): p['famille'] = None
     p['psy'] = q('SELECT y.id,u.nom,y.specialite,y.annees_exp FROM assignments a JOIN psychologues y ON y.id=a.psy_id JOIN users u ON u.id=y.user_id WHERE a.patient_id=? AND a.fin IS NULL', (pid,), True)
     p['historique'] = q('SELECT a.debut,a.fin,a.motif,u.nom psy FROM assignments a JOIN psychologues y ON y.id=a.psy_id JOIN users u ON u.id=y.user_id WHERE a.patient_id=? ORDER BY a.id DESC', (pid,))
-    p.update(suivi(pid))
-    if u['role'] == 'psychologue': p['seances'] = q('SELECT s.resume,r.date_heure FROM seances s JOIN rendez_vous r ON r.id=s.rdv_id WHERE r.patient_id=? ORDER BY r.date_heure DESC', (pid,))
+    clinique = u['role'] in ('psychologue', 'medecin', 'patient')
+    p.update(suivi(pid, clinique))
+    if u['role'] in ('psychologue', 'medecin'):
+        p['seances'] = q('SELECT s.resume,r.date_heure FROM seances s JOIN rendez_vous r ON r.id=s.rdv_id WHERE r.patient_id=? ORDER BY r.date_heure DESC', (pid,))
+        p['evaluations_psy'] = q('SELECT ep.observation,ep.date,r.date_heure FROM evaluations_psy ep JOIN rendez_vous r ON r.id=ep.rdv_id WHERE ep.patient_id=? ORDER BY ep.id DESC', (pid,))
     return p
 
 def affecter(pid, yid, motif):
@@ -231,6 +270,70 @@ def route(m, p, roles='*'):
     return d
 
 LOCK = {}
+
+def ouvrir_session(r):
+    t = secrets.token_urlsafe(32)
+    x('INSERT INTO sessions VALUES(?,?,?)', (t, r['id'], time.time() + 28800))
+    audit(r, 'connexion')
+    secure = '; Secure' if COOKIE_SECURE else ''
+    return {'id': r['id'], 'nom': r['nom'], 'role': r['role']}, [('Set-Cookie', 'ms=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800%s' % (t, secure))]
+
+@route('POST', '/inscription', None)
+def inscription_compte(u, b):
+    role = str(b.get('role', '')).strip()
+    email = str(b.get('email', '')).strip().lower()
+    nom = str(b.get('nom', '')).strip()
+    password = str(b.get('password', ''))
+    roles_autorises = ('patient', 'psychologue', 'medecin', 'parent', 'parrain', 'partenaire')
+    if role not in roles_autorises: raise Err('Choisissez un rôle autorisé')
+    if not re.match(r'^[^@\s]+@[^@\s]+\.\w+$', email) or not nom or len(nom) > 120: raise Err('Nom ou e-mail invalide')
+    if len(password) < 10: raise Err('Le mot de passe doit contenir au moins 10 caractères')
+    if not DEMO_MODE and email in DEMO_EMAILS: raise Err('Cette adresse e-mail est réservée')
+    extra = {}
+    if role == 'patient':
+        naissance = str(b.get('date_naissance', '')).strip()
+        try: naissance_date = dt.date.fromisoformat(naissance)
+        except ValueError: raise Err('Date de naissance invalide')
+        if naissance_date > dt.date.today(): raise Err('La date de naissance ne peut pas être future')
+        extra['naissance'] = naissance
+    if role in ('psychologue', 'medecin'):
+        specialite = str(b.get('specialite', '')).strip()[:100]
+        if not specialite: raise Err('La spécialité est obligatoire')
+        extra['specialite'] = specialite
+    if role == 'psychologue':
+        try: experience = int(b.get('annees_exp', 0))
+        except (TypeError, ValueError): raise Err('Années d’expérience invalides')
+        if not 0 <= experience <= 60: raise Err('Les années d’expérience doivent être comprises entre 0 et 60')
+        extra['exp'] = experience
+    if role == 'medecin':
+        extra['identifiant_professionnel'] = str(b.get('identifiant_professionnel', '')).strip()[:80]
+    c = _c()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        if c.execute('SELECT 1 FROM users WHERE email=?', (email,)).fetchone(): raise Err('E-mail déjà utilisé')
+        password_hash, salt = hp(password)
+        cur = c.execute('INSERT INTO users(email,nom,role,pw,salt) VALUES(?,?,?,?,?)', (email, nom, role, password_hash, salt))
+        uid = cur.lastrowid
+        if role == 'patient':
+            number = c.execute('SELECT COALESCE(MAX(id),0)+1 FROM patients').fetchone()[0]
+            c.execute('INSERT INTO patients(user_id,numero,date_naissance,famille) VALUES(?,?,?,?)', (uid, 'MS-%04d' % number, extra['naissance'], ''))
+        elif role == 'psychologue':
+            c.execute('INSERT INTO psychologues(user_id,specialite,annees_exp,langues,bio) VALUES(?,?,?,?,?)', (uid, extra['specialite'], extra['exp'], 'Français, Wolof', ''))
+        elif role == 'medecin':
+            c.execute('INSERT INTO medecins(user_id,specialite,identifiant_professionnel) VALUES(?,?,?)', (uid, extra['specialite'], extra['identifiant_professionnel']))
+        c.commit()
+    except Err:
+        c.rollback()
+        raise
+    except sqlite3.IntegrityError:
+        c.rollback()
+        raise Err('E-mail déjà utilisé')
+    finally:
+        c.close()
+    account = q('SELECT id,email,nom,role FROM users WHERE id=?', (uid,), True)
+    audit(account, 'inscription', role)
+    return ouvrir_session(account)
+
 @route('POST', '/login', None)
 def login(u, b):
     e = str(b.get('email', '')).lower().strip(); k = LOCK.get(e, (0, 0))
@@ -239,10 +342,8 @@ def login(u, b):
     r = q('SELECT * FROM users WHERE email=? AND actif=1', (e,), True)
     if not r or not secrets.compare_digest(hp(str(b.get('password', '')), r['salt'])[0], r['pw']):
         n = k[0] + 1; LOCK[e] = (n, time.time() + 60 if n >= 5 else 0); audit(None, 'connexion refusée', e); raise Err('Identifiants incorrects', 401)
-    LOCK.pop(e, None); t = secrets.token_urlsafe(32)
-    x('INSERT INTO sessions VALUES(?,?,?)', (t, r['id'], time.time() + 28800)); audit(r, 'connexion')
-    secure = '; Secure' if COOKIE_SECURE else ''
-    return {'id': r['id'], 'nom': r['nom'], 'role': r['role']}, [('Set-Cookie', 'ms=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800%s' % (t, secure))]
+    LOCK.pop(e, None)
+    return ouvrir_session(r)
 
 @route('POST', '/logout')
 def logout(u, b):
@@ -390,10 +491,48 @@ def annuler_rdv(u, b, rid):
 def seance(u, b, rid):
     r = q('SELECT * FROM rendez_vous WHERE id=?', (int(rid),), True)
     if not r or not acces(u, r['patient_id']): raise Err('Accès refusé', 403)
-    t = str(b.get('resume', '')).strip()[:2000]
-    if not t: raise Err('Résumé vide')
-    x("UPDATE rendez_vous SET statut='réalisé' WHERE id=?", (r['id'],))
-    x('INSERT OR REPLACE INTO seances(rdv_id,resume,date) VALUES(?,?,?)', (r['id'], t, now())); audit(u, 'séance enregistrée', 'rdv %d' % r['id']); return {'ok': 1}
+    if r['statut'] != 'prévu': raise Err('Ce rendez-vous a déjà été clôturé')
+    resume = str(b.get('resume', '')).strip()[:2000]
+    observation = str(b.get('evaluation', '')).strip()[:1500]
+    call_status = ''
+    duration = 0
+    if r['mode'] == 'appel':
+        call_status = str(b.get('statut_appel', 'réalisé')).strip()
+        if call_status not in ('réalisé', 'interrompu', 'sans réponse'): raise Err('État d’appel invalide')
+        try: duration = int(b.get('duree_min', 0))
+        except (TypeError, ValueError): raise Err('Durée d’appel invalide')
+        if not 0 <= duration <= 240 or (call_status == 'sans réponse' and duration != 0) or (call_status != 'sans réponse' and duration < 1):
+            raise Err('Vérifiez la durée de l’appel')
+        if call_status == 'sans réponse':
+            resume = resume or 'Aucun échange'
+        elif not resume or not observation:
+            raise Err('Le compte rendu et l’évaluation de séance sont obligatoires')
+    elif not resume or not observation:
+        raise Err('Le compte rendu et l’évaluation de séance sont obligatoires')
+    c = _c()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        cur = c.execute("UPDATE rendez_vous SET statut=? WHERE id=? AND statut='prévu'",
+                        ('non réalisé' if call_status == 'sans réponse' else 'réalisé', r['id']))
+        if not cur.rowcount: raise Err('Ce rendez-vous a déjà été clôturé')
+        if call_status != 'sans réponse':
+            c.execute('INSERT OR REPLACE INTO seances(rdv_id,resume,date) VALUES(?,?,?)', (r['id'], resume, now()))
+            c.execute('INSERT OR REPLACE INTO evaluations_psy(rdv_id,patient_id,psychologue_id,observation,date) VALUES(?,?,?,?,?)',
+                      (r['id'], r['patient_id'], psy_of(u)['id'], observation, now()))
+        if r['mode'] == 'appel':
+            c.execute('INSERT OR REPLACE INTO appels(rdv_id,duree_min,statut,date,rapporte_par,rapport_bref) VALUES(?,?,?,?,?,?)',
+                      (r['id'], duration, call_status, now(), u['id'], resume))
+        c.commit()
+    except Err:
+        c.rollback()
+        raise
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    audit(u, 'séance enregistrée', 'rdv %d' % r['id'])
+    return {'ok': 1}
 
 @route('POST', '/changer-psy', ['patient'])
 def changer(u, b):
@@ -440,14 +579,32 @@ def abonner(u, b):
     pid = cible(u, b); f = b.get('formule'); m = b.get('methode')
     if f not in FORMULES or m not in METHODES: raise Err('Formule ou moyen de paiement invalide')
     # Démonstration : le paiement est simulé. En production, appeler l'agrégateur de paiement et attendre sa confirmation.
-    a = x('INSERT INTO abonnements(patient_id,formule,debut,fin) VALUES(?,?,?,?)', (pid, f, now(), plus(30)))
-    x('INSERT INTO paiements(abonnement_id,payeur_id,montant,methode,statut,ref,date) VALUES(?,?,?,?,?,?,?)', (a, u['id'], FORMULES[f]['prix'], m, 'payé (simulation)', 'SIM-' + secrets.token_hex(4).upper(), now()))
-    audit(u, 'abonnement souscrit', 'patient %d, %s' % (pid, f)); return {'ok': 1}
+    date_paiement = now()
+    reference = 'MS-' + secrets.token_hex(4).upper()
+    c = _c()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        a = c.execute('INSERT INTO abonnements(patient_id,formule,debut,fin) VALUES(?,?,?,?)', (pid, f, date_paiement, plus(30))).lastrowid
+        c.execute('INSERT INTO paiements(abonnement_id,payeur_id,montant,methode,statut,ref,date) VALUES(?,?,?,?,?,?,?)',
+                  (a, u['id'], FORMULES[f]['prix'], m, 'payé (test)', reference, date_paiement))
+        patient = c.execute('SELECT u.nom,p.numero FROM patients p JOIN users u ON u.id=p.user_id WHERE p.id=?', (pid,)).fetchone()
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    audit(u, 'abonnement souscrit', 'patient %d, %s' % (pid, f))
+    return {'ok': 1, 'recu': {'date': date_paiement, 'reference': reference, 'montant': FORMULES[f]['prix'],
+            'methode': m, 'formule': FORMULES[f]['label'], 'numero': patient['numero'], 'patient': patient['nom'], 'payeur': u['nom']}}
 
 @route('GET', '/paiements')
 def paiements(u, b):
     p = pat_of(u) if u['role'] == 'patient' else None
-    return q('SELECT pa.date,pa.montant,pa.methode,pa.statut,pa.ref,a.formule,pt.numero,pu.nom payeur FROM paiements pa JOIN abonnements a ON a.id=pa.abonnement_id JOIN patients pt ON pt.id=a.patient_id JOIN users pu ON pu.id=pa.payeur_id WHERE pa.payeur_id=? OR a.patient_id=? ORDER BY pa.id DESC', (u['id'], p['id'] if p else -1))
+    rows = q('SELECT pa.date,pa.montant,pa.methode,pa.statut,pa.ref,a.formule,pt.numero,pu.nom payeur FROM paiements pa JOIN abonnements a ON a.id=pa.abonnement_id JOIN patients pt ON pt.id=a.patient_id JOIN users pu ON pu.id=pa.payeur_id WHERE pa.payeur_id=? OR a.patient_id=? ORDER BY pa.id DESC', (u['id'], p['id'] if p else -1))
+    for row in rows:
+        if 'test' in row['statut'] or 'simulation' in row['statut']: row['statut'] = 'Enregistré'
+    return rows
 
 @route('GET', '/psy/home', ['psychologue'])
 def phome2(u, b):
@@ -456,15 +613,36 @@ def phome2(u, b):
             'rdv': q('SELECT r.id,r.date_heure,r.mode,r.statut,u.nom patient,p.numero FROM rendez_vous r JOIN patients p ON p.id=r.patient_id JOIN users u ON u.id=p.user_id WHERE r.psy_id=? ORDER BY r.date_heure DESC', (y['id'],)),
             'groupes': q('SELECT g.id,g.nom,(SELECT COUNT(*) FROM groupe_membres m WHERE m.groupe_id=g.id) membres FROM groupe_psy s JOIN groupes g ON g.id=s.groupe_id WHERE s.psy_id=?', (y['id'],))}
 
+@route('GET', '/appels', ['patient', 'psychologue', 'medecin'])
+def historique_appels(u, b):
+    clinician = u['role'] in ('psychologue', 'medecin')
+    if u['role'] == 'patient':
+        patient = pat_of(u)
+        if not patient: raise Err('Profil patient introuvable', 404)
+        clause, args = 'r.patient_id=?', (patient['id'],)
+    elif u['role'] == 'psychologue':
+        psy = psy_of(u)
+        clause, args = 'r.psy_id=?', (psy['id'],)
+    else:
+        clause, args = 'EXISTS (SELECT 1 FROM medecin_patients mp JOIN medecins m ON m.id=mp.medecin_id WHERE m.user_id=? AND mp.patient_id=r.patient_id)', (u['id'],)
+    rows = q("""SELECT a.id,r.id rdv_id,r.date_heure,p.numero,pu.nom patient,yu.nom psychologue,
+        a.duree_min,a.statut,a.date%s
+        FROM appels a JOIN rendez_vous r ON r.id=a.rdv_id
+        JOIN patients p ON p.id=r.patient_id JOIN users pu ON pu.id=p.user_id
+        JOIN psychologues y ON y.id=r.psy_id JOIN users yu ON yu.id=y.user_id
+        WHERE %s ORDER BY a.date DESC""" % (',a.rapport_bref' if clinician else '', clause), args)
+    return rows
+
 @route('GET', '/patients/(\\d+)')
 def getpatient(u, b, pid):
     pid = int(pid)
     if not acces(u, pid) or u['role'] == 'admin': raise Err('Accès refusé', 403)
     audit(u, 'consultation de fiche', 'patient %d' % pid); return fiche(u, pid)
 
-@route('GET', '/patients', ['medecin', 'admin'])
+@route('GET', '/patients', ['medecin'])
 def patients(u, b):
-    return [dict(r, age=age(r['date_naissance'])) for r in q('SELECT p.id,p.numero,p.date_naissance,u.nom,(SELECT e.etat FROM evaluations e WHERE e.patient_id=p.id ORDER BY e.id DESC LIMIT 1) etat,(SELECT un.nom FROM assignments a JOIN psychologues y ON y.id=a.psy_id JOIN users un ON un.id=y.user_id WHERE a.patient_id=p.id AND a.fin IS NULL) psy FROM patients p JOIN users u ON u.id=p.user_id')]
+    rows = q('SELECT p.id,p.numero,p.date_naissance,u.nom,(SELECT e.etat FROM evaluations e WHERE e.patient_id=p.id ORDER BY e.id DESC LIMIT 1) etat,(SELECT un.nom FROM assignments a JOIN psychologues y ON y.id=a.psy_id JOIN users un ON un.id=y.user_id WHERE a.patient_id=p.id AND a.fin IS NULL) psy FROM patients p JOIN users u ON u.id=p.user_id JOIN medecin_patients mp ON mp.patient_id=p.id JOIN medecins m ON m.id=mp.medecin_id WHERE m.user_id=? ORDER BY u.nom', (u['id'],))
+    return [dict(row, age=age(row['date_naissance'])) for row in rows]
 
 @route('GET', '/programmes', ['medecin', 'admin', 'psychologue'])
 def programmes(u, b):
@@ -474,10 +652,13 @@ def programmes(u, b):
 
 @route('POST', '/evaluations', ['medecin'])
 def evaluer(u, b):
+    pid = b.get('patient_id')
     etat = str(b.get('etat', '')).strip()[:300]
-    if not etat or not q('SELECT 1 FROM patients WHERE id=?', (b.get('patient_id'),), True): raise Err('Patient ou état manquant')
-    x('INSERT INTO evaluations(patient_id,medecin_id,etat,programme_id,date) VALUES(?,?,?,?,?)', (b['patient_id'], u['id'], etat, b.get('programme_id') or None, now()))
-    audit(u, 'évaluation médicale', 'patient %s' % b['patient_id']); return {'ok': 1}
+    if not etat or not isinstance(pid, int) or not acces(u, pid): raise Err('Patient non autorisé ou état manquant', 403)
+    programme_id = b.get('programme_id') or None
+    if programme_id and not q('SELECT 1 FROM programmes WHERE id=?', (programme_id,), True): raise Err('Programme inconnu')
+    x('INSERT INTO evaluations(patient_id,medecin_id,etat,programme_id,date) VALUES(?,?,?,?,?)', (pid, u['id'], etat, programme_id, now()))
+    audit(u, 'évaluation médicale', 'patient %s' % pid); return {'ok': 1}
 
 @route('GET', '/suivi', ['parent', 'parrain', 'partenaire'])
 def suivi_famille(u, b):
@@ -485,11 +666,57 @@ def suivi_famille(u, b):
     for l in q('SELECT patient_id,consentement,type FROM liens WHERE user_id=? AND type=?', (u['id'], u['role'])):
         if l['type'] != 'parent' and not l['consentement']: continue
         if l['type'] == 'parent' and not acces(u, l['patient_id']): continue
-        p = fiche(u, l['patient_id']); out.append(p)
+        if u['role'] == 'parent':
+            p = fiche(u, l['patient_id'])
+            p['evaluations'] = []
+            out.append(p)
+        else:
+            p = q('SELECT p.id,p.numero,u.nom FROM patients p JOIN users u ON u.id=p.user_id WHERE p.id=?', (l['patient_id'],), True)
+            p['abonnement'] = abo(l['patient_id'])
+            out.append(p)
     audit(u, 'suivi consulté'); return out
 
 @route('GET', '/communautes')
-def comms(u, b): return q('SELECT c.*,(SELECT COUNT(*) FROM communaute_membres m WHERE m.communaute_id=c.id) membres,EXISTS(SELECT 1 FROM communaute_membres m WHERE m.communaute_id=c.id AND m.user_id=?) membre FROM communautes c', (u['id'],))
+def comms(u, b):
+    rows = q('''SELECT c.*,
+        (SELECT COUNT(*) FROM communaute_membres m WHERE m.communaute_id=c.id) membres,
+        EXISTS(SELECT 1 FROM communaute_membres m WHERE m.communaute_id=c.id AND m.user_id=?) membre,
+        (?='admin' OR EXISTS(SELECT 1 FROM communaute_createurs cr WHERE cr.communaute_id=c.id AND cr.user_id=?)) peut_gerer
+        FROM communautes c ORDER BY c.nom''', (u['id'], u['role'], u['id']))
+    return rows
+
+@route('POST', '/communautes', ['admin', 'psychologue'])
+def creer_communaute(u, b):
+    nom = str(b.get('nom', '')).strip()[:100]
+    description = str(b.get('description', '')).strip()[:500]
+    if not nom or not description: raise Err('Le nom et la description sont obligatoires')
+    community_id = x('INSERT INTO communautes(nom,description) VALUES(?,?)', (nom, description))
+    if u['role'] == 'psychologue':
+        x('INSERT INTO communaute_createurs(communaute_id,user_id) VALUES(?,?)', (community_id, u['id']))
+    audit(u, 'communauté créée', nom)
+    return {'ok': 1}
+
+@route('POST', '/communautes/(\\d+)/supprimer', ['admin', 'psychologue'])
+def supprimer_communaute(u, b, cid):
+    cid = int(cid)
+    if not q('SELECT 1 FROM communautes WHERE id=?', (cid,), True): raise Err('Communauté introuvable', 404)
+    if u['role'] != 'admin' and not q('SELECT 1 FROM communaute_createurs WHERE communaute_id=? AND user_id=?', (cid, u['id']), True):
+        raise Err('Vous ne pouvez pas gérer cette communauté', 403)
+    c = _c()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('DELETE FROM posts WHERE communaute_id=?', (cid,))
+        c.execute('DELETE FROM communaute_membres WHERE communaute_id=?', (cid,))
+        c.execute('DELETE FROM communaute_createurs WHERE communaute_id=?', (cid,))
+        c.execute('DELETE FROM communautes WHERE id=?', (cid,))
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    audit(u, 'communauté supprimée', str(cid))
+    return {'ok': 1}
 
 @route('POST', '/communautes/(\\d+)/rejoindre')
 def rejoindre(u, b, cid): x('INSERT OR IGNORE INTO communaute_membres VALUES(?,?)', (int(cid), u['id'])); return {'ok': 1}
@@ -505,6 +732,60 @@ def poster(u, b, cid):
     if not t or not q('SELECT 1 FROM communaute_membres WHERE communaute_id=? AND user_id=?', (int(cid), u['id']), True): raise Err('Message impossible')
     x('INSERT INTO posts(communaute_id,user_id,contenu,date) VALUES(?,?,?,?)', (int(cid), u['id'], t, now())); return {'ok': 1}
 
+PARTNER_TYPES = ('ong', 'ecole', 'organisation', 'institution')
+
+def partner_url(value, required=False):
+    value = str(value or '').strip()
+    if not value and not required: return ''
+    parsed = urlparse(value)
+    if value.startswith('/') and not value.startswith('//'): return value
+    if parsed.scheme == 'https' and parsed.netloc and not any(ch.isspace() for ch in value): return value
+    raise Err('Utilisez une adresse HTTPS ou un chemin local pour le logo')
+
+def partner_fields(b):
+    nom = str(b.get('nom', '')).strip()[:120]
+    kind = str(b.get('type', '')).strip()
+    description = str(b.get('description', '')).strip()[:500]
+    logo = partner_url(b.get('logo_url'), True)
+    site = partner_url(b.get('site_url'))
+    if not nom or kind not in PARTNER_TYPES or not description: raise Err('Vérifiez le nom, le type et la description')
+    return nom, kind, description, logo, site
+
+@route('GET', '/partenaires', None)
+def partenaires(u, b):
+    return q('SELECT id,nom,type,description,logo_url,site_url FROM partenaires WHERE actif=1 ORDER BY nom')
+
+@route('GET', '/admin/partenaires', ['admin'])
+def partenaires_admin(u, b):
+    return q('SELECT id,nom,type,description,logo_url,site_url,actif FROM partenaires ORDER BY nom')
+
+@route('POST', '/admin/partenaires', ['admin'])
+def ajouter_partenaire(u, b):
+    fields = partner_fields(b)
+    x('INSERT INTO partenaires(nom,type,description,logo_url,site_url) VALUES(?,?,?,?,?)', fields)
+    audit(u, 'partenaire créé', fields[0])
+    return {'ok': 1}
+
+@route('POST', '/admin/partenaires/(\\d+)', ['admin'])
+def modifier_partenaire(u, b, pid):
+    fields = partner_fields(b)
+    if not q('SELECT 1 FROM partenaires WHERE id=?', (int(pid),), True): raise Err('Partenaire introuvable', 404)
+    x('UPDATE partenaires SET nom=?,type=?,description=?,logo_url=?,site_url=? WHERE id=?', fields + (int(pid),))
+    audit(u, 'partenaire modifié', str(pid))
+    return {'ok': 1}
+
+@route('POST', '/admin/partenaires/(\\d+)/retirer', ['admin'])
+def retirer_partenaire(u, b, pid):
+    c = _c()
+    try:
+        cur = c.execute('DELETE FROM partenaires WHERE id=?', (int(pid),))
+        c.commit()
+    finally:
+        c.close()
+    if not cur.rowcount: raise Err('Partenaire introuvable', 404)
+    audit(u, 'partenaire retiré', str(pid))
+    return {'ok': 1}
+
 @route('GET', '/admin/stats', ['admin'])
 def stats(u, b):
     n = lambda s: q(s, one=True)['n']
@@ -513,6 +794,21 @@ def stats(u, b):
 
 @route('GET', '/admin/users', ['admin'])
 def users(u, b): return q('SELECT id,email,nom,role,actif FROM users ORDER BY id')
+
+@route('GET', '/admin/patients', ['admin'])
+def patients_admin(u, b):
+    rows = q('''SELECT p.id,p.numero,p.date_naissance,u.nom,
+        (SELECT un.nom FROM assignments a JOIN psychologues y ON y.id=a.psy_id JOIN users un ON un.id=y.user_id
+         WHERE a.patient_id=p.id AND a.fin IS NULL) psy
+        FROM patients p JOIN users u ON u.id=p.user_id ORDER BY u.nom''')
+    return [dict(row, age=age(row['date_naissance'])) for row in rows]
+
+@route('GET', '/admin/medecin-affectations', ['admin'])
+def affectations_medecins(u, b):
+    return q('''SELECT mp.medecin_id,mp.patient_id,mu.nom medecin,pu.nom patient,p.numero
+        FROM medecin_patients mp JOIN medecins m ON m.id=mp.medecin_id
+        JOIN users mu ON mu.id=m.user_id JOIN patients p ON p.id=mp.patient_id
+        JOIN users pu ON pu.id=p.user_id ORDER BY pu.nom,mu.nom''')
 
 @route('POST', '/admin/users', ['admin'])
 def nouvel(u, b):
@@ -576,13 +872,24 @@ def aff(u, b):
     if not q('SELECT 1 FROM patients WHERE id=?', (b.get('patient_id'),), True) or not q('SELECT 1 FROM psychologues WHERE id=?', (b.get('psy_id'),), True): raise Err('Patient ou psychologue inconnu')
     affecter(b['patient_id'], b['psy_id'], str(b.get('motif', 'Affectation administrateur'))[:200]); audit(u, 'affectation', 'patient %s vers psy %s' % (b['patient_id'], b['psy_id'])); return {'ok': 1}
 
+@route('POST', '/admin/affecter-medecin', ['admin'])
+def affecter_medecin(u, b):
+    medecin_user_id = b.get('medecin_user_id')
+    patient_id = b.get('patient_id')
+    doctor = q('SELECT m.id FROM medecins m JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND u.actif=1', (medecin_user_id,), True)
+    if not isinstance(patient_id, int) or not doctor or not q('SELECT 1 FROM patients WHERE id=?', (patient_id,), True):
+        raise Err('Médecin ou patient inconnu')
+    x('INSERT OR IGNORE INTO medecin_patients(medecin_id,patient_id) VALUES(?,?)', (doctor['id'], patient_id))
+    audit(u, 'affectation médicale', 'patient %s vers médecin %s' % (patient_id, medecin_user_id))
+    return {'ok': 1}
+
 @route('GET', '/admin/audit', ['admin'])
 def journal(u, b): return q('SELECT a.ts,COALESCE(u.nom,"(anonyme)") utilisateur,a.action,a.cible FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 150')
 
 # ---------- serveur HTTP ----------
 SEC = [('X-Content-Type-Options', 'nosniff'), ('X-Frame-Options', 'DENY'), ('Referrer-Policy', 'no-referrer'),
-       ('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"), ('Cache-Control', 'no-store')]
-MIME = {'.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.webp': 'image/webp'}
+       ('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; frame-ancestors 'none'"), ('Cache-Control', 'no-store')]
+MIME = {'.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.webp': 'image/webp', '.svg': 'image/svg+xml'}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -629,10 +936,6 @@ class H(BaseHTTPRequestHandler):
         self.out(404, {'erreur': 'Introuvable'})
 
 if __name__ == '__main__':
-    seed(); host = os.environ.get('MENSSANA_HOST', '127.0.0.1'); port = int(os.environ.get('PORT', 8000))
-    if DEMO_MODE:
-        print('Mens Sana écoute sur %s:%d  (mode démo)' % (host, port))
-        print('Comptes démo : mot de passe commun Demo2026! — ne pas utiliser avec de vraies données.')
-    else:
-        print('Mens Sana écoute sur %s:%d  (mode sans données de démonstration)' % (host, port))
+    seed(); provision_admin(); host = os.environ.get('MENSSANA_HOST', '127.0.0.1'); port = int(os.environ.get('PORT', 8000))
+    print('Mens Sana écoute sur %s:%d' % (host, port))
     ThreadingHTTPServer((host, port), H).serve_forever()

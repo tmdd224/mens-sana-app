@@ -1,18 +1,25 @@
 services:
   - type: web
-    name: mens-sana-demo
+    name: mens-sana-app
     runtime: python
     plan: free
     branch: main
+    autoDeployTrigger: checksPass
     buildCommand: cd mens-sana && python -B -m unittest discover -s tests -v
     startCommand: cd mens-sana && python -B server.py
     healthCheckPath: /
     envVars:
       - key: MENSSANA_DEMO
-        value: "1"
+        value: "0"
       - key: MENSSANA_HOST
         value: "0.0.0.0"
       - key: MENSSANA_COOKIE_SECURE
         value: "1"
       - key: MENSSANA_DB_PATH
         value: /tmp/mens_sana.db
+      - key: MENSSANA_ADMIN_EMAIL
+        sync: false
+      - key: MENSSANA_ADMIN_NAME
+        sync: false
+      - key: MENSSANA_ADMIN_PASSWORD
+        sync: false
