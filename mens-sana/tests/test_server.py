@@ -57,8 +57,11 @@ class ServerRuleTests(unittest.TestCase):
             [(1, 'normal', server.now(), '9999-12-31T23:59'),
              (2, 'normal', server.now(), '9999-12-31T23:59')],
         )
+        connection.execute("INSERT INTO users(id,email,nom,role,pw,salt) VALUES(7,'perso@example.test','Personnalité','personnalite','','')")
+        connection.execute("INSERT INTO personnalites(id,user_id,categorie,bio) VALUES(1,7,'Artiste','Bio')")
         connection.commit()
         connection.close()
+        server.ensure_schema()
 
     def tearDown(self):
         server.DB = self.previous_db
@@ -136,33 +139,36 @@ class ServerRuleTests(unittest.TestCase):
 
         server.lier_proche(admin, dict(base, consentement=True))
 
-    def test_professionals_can_register_and_sign_in_without_admin_approval(self):
-        response, headers = server.inscription_compte(None, {
+    def test_professional_accounts_are_created_by_admin_not_self_registration(self):
+        for role in ('psychologue', 'partenaire'):
+            with self.assertRaises(server.Err):
+                server.inscription_compte(None, {
+                    'role': role,
+                    'email': 'new.%s@example.test' % role,
+                    'nom': 'Test',
+                    'password': 'TemporaryPass123',
+                })
+        admin = {'id': 5, 'role': 'admin'}
+        server.nouvel(admin, {
             'role': 'psychologue',
-            'email': 'new.psy@example.test',
-            'nom': 'Nouveau Psychologue',
+            'email': 'created.psy@example.test',
+            'nom': 'Psy Créé',
             'password': 'TemporaryPass123',
-            'specialite': 'Psychologie clinique',
-            'annees_exp': '4',
+            'specialite': 'Clinique',
+            'annees_exp': '5',
         })
-
-        user = server.q('SELECT id,role,actif FROM users WHERE email=?',
-                        ('new.psy@example.test',), True)
-        profile = server.q('SELECT specialite,annees_exp FROM psychologues WHERE user_id=?',
-                           (user['id'],), True)
-        self.assertEqual(response['role'], 'psychologue')
+        user = server.q('SELECT id,role,actif FROM users WHERE email=?', ('created.psy@example.test',), True)
+        self.assertEqual(user['role'], 'psychologue')
         self.assertEqual(user['actif'], 1)
-        self.assertEqual(profile, {'specialite': 'Psychologie clinique', 'annees_exp': 4})
-        self.assertIn('ms=', dict(headers)['Set-Cookie'])
-        self.assertFalse(server.acces({'id': user['id'], 'role': 'psychologue'}, 1))
-
-        with self.assertRaises(server.Err):
-            server.inscription_compte(None, {
-                'role': 'admin',
-                'email': 'new.admin@example.test',
-                'nom': 'Admin',
-                'password': 'TemporaryPass123',
-            })
+        # patient can still self-register
+        response, _ = server.inscription_compte(None, {
+            'role': 'patient',
+            'email': 'self.patient@example.test',
+            'nom': 'Patient Auto',
+            'password': 'TemporaryPass123',
+            'date_naissance': '2000-01-01',
+        })
+        self.assertEqual(response['role'], 'patient')
 
     def test_registration_rejects_reserved_addresses_when_seed_accounts_are_disabled(self):
         user_count = server.q('SELECT COUNT(*) count FROM users', one=True)['count']
@@ -217,40 +223,52 @@ class ServerRuleTests(unittest.TestCase):
         self.assertEqual(authenticated['id'], admin['id'])
         self.assertIsNone(server.q('SELECT 1 FROM sessions WHERE token=?', ('demo-session',), True))
 
-    def test_doctor_can_access_only_patients_assigned_to_them(self):
-        doctor = {'id': 6, 'role': 'medecin'}
+    def test_personnalite_has_no_patient_dossier_access_and_admin_creates_professional_accounts(self):
+        personnalite = {'id': 7, 'role': 'personnalite'}
         admin = {'id': 5, 'role': 'admin'}
 
-        self.assertFalse(server.acces(doctor, 1))
-        server.affecter_medecin(admin, {'medecin_user_id': 6, 'patient_id': 1})
+        self.assertFalse(server.acces(personnalite, 1))
+        server.nouvel(admin, {
+            'role': 'psychologue',
+            'email': 'new.psy.admin@example.test',
+            'nom': 'Psy Admin',
+            'password': 'TemporaryPass123',
+            'specialite': 'Clinique',
+            'annees_exp': '3',
+        })
+        psy = server.q('SELECT role,actif FROM users WHERE email=?', ('new.psy.admin@example.test',), True)
+        self.assertEqual(psy['role'], 'psychologue')
+        self.assertEqual(psy['actif'], 1)
+        server.nouvel(admin, {
+            'role': 'personnalite',
+            'email': 'star@example.test',
+            'nom': 'Star',
+            'password': 'TemporaryPass123',
+            'categorie': 'Sportif',
+            'bio': 'Ambassadeur',
+        })
+        perso = server.q('SELECT id FROM users WHERE email=?', ('star@example.test',), True)
+        self.assertTrue(server.q('SELECT 1 FROM personnalites WHERE user_id=?', (perso['id'],), True))
 
-        self.assertTrue(server.acces(doctor, 1))
-        self.assertFalse(server.acces(doctor, 2))
-        with self.assertRaises(server.Err):
-            server.evaluer(doctor, {'patient_id': 2, 'etat': 'Évaluation non autorisée'})
-
-    def test_call_report_is_visible_only_to_assigned_care_team(self):
+    def test_call_report_is_visible_only_to_patient_and_psychologist(self):
         appointment = server.x(
             "INSERT INTO rendez_vous(patient_id,psy_id,date_heure,mode,lieu,statut) "
-            "VALUES(1,1,?,'appel','À distance','réalisé')",
+            "VALUES(1,1,?,'appel_video','Visio','réalisé')",
             (server.now(),),
         )
         server.x('INSERT INTO seances(rdv_id,resume,date) VALUES(?,?,?)',
                  (appointment, 'Résumé réservé aux soignants', server.now()))
         server.x(
-            'INSERT INTO appels(rdv_id,duree_min,statut,date,rapporte_par,rapport_bref) VALUES(?,?,?,?,?,?)',
-            (appointment, 35, 'réalisé', server.now(), 4, 'Résumé réservé aux soignants'),
+            'INSERT INTO appels(rdv_id,duree_min,statut,date,rapporte_par,rapport_bref,mode_appel) VALUES(?,?,?,?,?,?,?)',
+            (appointment, 35, 'réalisé', server.now(), 4, 'Résumé réservé aux soignants', 'video'),
         )
         patient_calls = server.historique_appels({'id': 2, 'role': 'patient'}, {})
         psychologist_calls = server.historique_appels({'id': 4, 'role': 'psychologue'}, {})
 
         self.assertNotIn('rapport_bref', patient_calls[0])
+        self.assertEqual(patient_calls[0].get('mode_appel'), 'video')
         self.assertEqual(psychologist_calls[0]['rapport_bref'], 'Résumé réservé aux soignants')
         self.assertEqual(psychologist_calls[0]['duree_min'], 35)
-        self.assertEqual(server.historique_appels({'id': 6, 'role': 'medecin'}, {}), [])
-        server.affecter_medecin({'id': 5, 'role': 'admin'}, {'medecin_user_id': 6, 'patient_id': 1})
-        doctor_calls = server.historique_appels({'id': 6, 'role': 'medecin'}, {})
-        self.assertEqual(doctor_calls[0]['rapport_bref'], 'Résumé réservé aux soignants')
 
     def test_session_and_medical_assessments_are_stored_separately(self):
         appointment = server.x(
