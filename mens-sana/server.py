@@ -28,7 +28,7 @@ TARIF_SEANCE_DEFAUT = 15000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT UNIQUE, nom TEXT, role TEXT, pw TEXT, salt TEXT, actif INTEGER DEFAULT 1);
-CREATE TABLE IF NOT EXISTS patients(id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), numero TEXT UNIQUE, date_naissance TEXT, famille TEXT);
+CREATE TABLE IF NOT EXISTS patients(id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), numero TEXT UNIQUE, date_naissance TEXT, sexe TEXT DEFAULT '', famille TEXT);
 CREATE TABLE IF NOT EXISTS psychologues(id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), specialite TEXT, annees_exp INTEGER, langues TEXT, bio TEXT);
 CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY, patient_id INTEGER REFERENCES patients(id), psy_id INTEGER REFERENCES psychologues(id), debut TEXT, fin TEXT, motif TEXT);
 CREATE TABLE IF NOT EXISTS groupes(id INTEGER PRIMARY KEY, nom TEXT);
@@ -104,7 +104,7 @@ def creer_user(email, nom, role, pw, **k):
     uid = x('INSERT INTO users(email,nom,role,pw,salt) VALUES(?,?,?,?,?)', (email.lower(), nom, role, h, s))
     if role == 'patient':
         n = q('SELECT COUNT(*) n FROM patients', one=True)['n'] + 1
-        x('INSERT INTO patients(user_id,numero,date_naissance,famille) VALUES(?,?,?,?)', (uid, 'MS-%04d' % n, k['naissance'], k.get('famille', '')))
+        x('INSERT INTO patients(user_id,numero,date_naissance,sexe,famille) VALUES(?,?,?,?,?)', (uid, 'MS-%04d' % n, k['naissance'], k.get('sexe', ''), k.get('famille', '')))
     if role == 'psychologue':
         x('INSERT INTO psychologues(user_id,specialite,annees_exp,langues,bio) VALUES(?,?,?,?,?)', (uid, k.get('specialite', 'Psychologie clinique'), k.get('exp', 1), k.get('langues', 'Français, Wolof'), k.get('bio', '')))
     if role == 'personnalite':
@@ -146,6 +146,8 @@ def ensure_schema():
         except Exception: pass
         try: c.execute("ALTER TABLE rendez_vous ADD COLUMN duree INTEGER DEFAULT 60")
         except Exception: pass
+        try: c.execute("ALTER TABLE patients ADD COLUMN sexe TEXT DEFAULT ''")
+        except Exception: pass
         c.commit()
     finally:
         c.close()
@@ -164,10 +166,10 @@ def seed():
         ('m.seck@menssana.sn', 'Mamadou Seck', 'psychologue', dict(specialite='Thérapies brèves, jeunes adultes', exp=7, langues='Français, Wolof, Pulaar', bio='Accompagne les étudiants et jeunes actifs.')),
         ('a.niang@menssana.sn', 'Aïssatou Niang', 'psychologue', dict(specialite='Enfants et adolescents', exp=9, langues='Français, Wolof, Sérère', bio='Spécialiste du suivi des mineurs et des familles.')),
         ('dr.gueye@menssana.sn', 'Aminata Diaw', 'personnalite', {'categorie': 'Artiste & influenceuse', 'bio': 'Marraine des programmes bien-être jeunesse.'}),
-        ('awa@demo.sn', 'Awa Sow', 'patient', dict(naissance='1998-04-12', famille='Vit avec sa mère et deux sœurs.')),
-        ('moussa@demo.sn', 'Moussa Fall', 'patient', dict(naissance='1995-09-03', famille='Célibataire, famille à Kaolack.')),
-        ('khady@demo.sn', 'Khady Ba', 'patient', dict(naissance='2001-01-22', famille='Étudiante, vit en résidence.')),
-        ('ibrahima@demo.sn', 'Ibrahima Sarr', 'patient', dict(naissance='2011-06-30', famille='Mineur, vit avec sa mère.')),
+        ('awa@demo.sn', 'Awa Sow', 'patient', dict(naissance='1998-04-12', sexe='Femme', famille='Vit avec sa mère et deux sœurs.')),
+        ('moussa@demo.sn', 'Moussa Fall', 'patient', dict(naissance='1995-09-03', sexe='Homme', famille='Célibataire, famille à Kaolack.')),
+        ('khady@demo.sn', 'Khady Ba', 'patient', dict(naissance='2001-01-22', sexe='Femme', famille='Étudiante, vit en résidence.')),
+        ('ibrahima@demo.sn', 'Ibrahima Sarr', 'patient', dict(naissance='2011-06-30', sexe='Homme', famille='Mineur, vit avec sa mère.')),
         ('parent@demo.sn', 'Ndèye Sarr', 'parent', {}),
         ('parrain@demo.sn', 'Oumar Ndao', 'parrain', {}),
         ('partenaire@demo.sn', 'Fondation Teranga', 'partenaire', {})]:
@@ -360,10 +362,13 @@ def inscription_compte(u, b):
     extra = {}
     if role == 'patient':
         naissance = str(b.get('date_naissance', '')).strip()
+        sexe = str(b.get('sexe', '')).strip()
+        if sexe not in ('Femme', 'Homme', 'Autre'): raise Err('Veuillez choisir le sexe')
         try: naissance_date = dt.date.fromisoformat(naissance)
         except ValueError: raise Err('Date de naissance invalide')
         if naissance_date > dt.date.today(): raise Err('La date de naissance ne peut pas être future')
         extra['naissance'] = naissance
+        extra['sexe'] = sexe
     if role == 'psychologue':
         specialite = str(b.get('specialite', '')).strip()[:100]
         if not specialite: raise Err('La spécialité est obligatoire')
@@ -896,10 +901,13 @@ def nouvel(u, b):
     extra = {}
     if role == 'patient':
         naissance = str(b.get('date_naissance', '')).strip()
+        sexe = str(b.get('sexe', '')).strip()
+        if sexe not in ('Femme', 'Homme', 'Autre'): raise Err('Veuillez choisir le sexe')
         try: naissance_date = dt.date.fromisoformat(naissance)
         except ValueError: raise Err('Date de naissance invalide')
         if naissance_date > dt.date.today(): raise Err('La date de naissance ne peut pas être future')
         extra['naissance'] = naissance
+        extra['sexe'] = sexe
     if role == 'psychologue':
         extra['specialite'] = str(b.get('specialite', '')).strip()[:100] or 'Psychologie clinique'
         try: extra['exp'] = int(b.get('annees_exp', 1) or 1)
@@ -1038,7 +1046,12 @@ class H(BaseHTTPRequestHandler):
             f = 'index.html' if p == '/' else os.path.basename(p)
             fp = os.path.join(ST, f)
             if not os.path.isfile(fp): return self.out(404, {'erreur': 'Introuvable'})
-            return self.out(200, open(fp, 'rb').read(), MIME.get(os.path.splitext(f)[1], 'application/octet-stream'))
+            ctype = MIME.get(os.path.splitext(f)[1], 'application/octet-stream')
+            if f == 'index.html':
+                cache = [('Cache-Control', 'no-cache')]
+            else:
+                cache = [('Cache-Control', 'public, max-age=604800')]
+            return self.out(200, open(fp, 'rb').read(), ctype, cache)
         body = {}
         if m == 'POST':
             if self.headers.get('X-Requested-With') != 'fetch': return self.out(403, {'erreur': 'Requête refusée'})

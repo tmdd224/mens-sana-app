@@ -28,8 +28,8 @@ class ServerRuleTests(unittest.TestCase):
             ],
         )
         connection.executemany(
-            'INSERT INTO patients(id,user_id,numero,date_naissance) VALUES(?,?,?,?)',
-            [(1, 2, 'MS-0001', '2011-06-30'), (2, 3, 'MS-0002', '1990-06-30')],
+            'INSERT INTO patients(id,user_id,numero,date_naissance,sexe) VALUES(?,?,?,?,?)',
+            [(1, 2, 'MS-0001', '2011-06-30', 'Homme'), (2, 3, 'MS-0002', '1990-06-30', 'Femme')],
         )
         connection.executemany(
             'INSERT INTO liens(user_id,patient_id,type,consentement) VALUES(?,?,?,?)',
@@ -117,16 +117,18 @@ class ServerRuleTests(unittest.TestCase):
             'nom': 'Nouveau Patient',
             'password': 'TemporaryPass123',
             'date_naissance': '2012-01-01',
+            'sexe': 'Femme',
         }
 
         server.nouvel(admin, data)
         patient = server.q(
-            'SELECT p.date_naissance FROM patients p JOIN users u ON u.id=p.user_id WHERE u.email=?',
+            'SELECT p.date_naissance, p.sexe FROM patients p JOIN users u ON u.id=p.user_id WHERE u.email=?',
             (data['email'],),
             True,
         )
 
         self.assertEqual(patient['date_naissance'], data['date_naissance'])
+        self.assertEqual(patient.get('sexe'), data['sexe'])
 
     def test_link_creation_requires_consent_and_minor_for_parent(self):
         admin = {'id': 5, 'role': 'admin'}
@@ -167,6 +169,7 @@ class ServerRuleTests(unittest.TestCase):
             'nom': 'Patient Auto',
             'password': 'TemporaryPass123',
             'date_naissance': '2000-01-01',
+            'sexe': 'Femme',
         })
         self.assertEqual(response['role'], 'patient')
 
@@ -180,6 +183,7 @@ class ServerRuleTests(unittest.TestCase):
                     'nom': 'Compte réservé',
                     'password': 'TemporaryPass123',
                     'date_naissance': '1990-01-01',
+                    'sexe': 'Homme',
                 })
 
         self.assertIn('réservée', raised.exception.m)
