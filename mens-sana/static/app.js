@@ -18,8 +18,29 @@ admin:[['stats','Tableau de bord'],['users','Utilisateurs'],['aff','Affectations
 let me=null,page='',commOpen=null,formule='premium',partnerFilter='all';
 /* ---------- connexion ---------- */
 async function loginView(){let partners=[];try{partners=await api('/partenaires')}catch(e){}
-$('#app').innerHTML=`<div class="login"><div class="hero"><div class="lg"><img src="/logo.webp" alt="Mens Sana"></div><h1>Un esprit sain,<br>un avenir serein.</h1><p>Mens Sana met en relation les patients et les professionnels de santé, facilite les rendez-vous et accompagne les familles.</p><div class="pills"><span>Suivi personnalisé</span><span>Rendez-vous et ateliers</span><span>Un accompagnement humain</span></div>${partners.length?`<div class="login-partners"><div class="k" style="color:#f5e1d6;margin-top:8px">Nos partenaires</div><div class="login-partner-list">${partners.slice(0,6).map(p=>`<span class="login-partner">${esc(p.nom)}</span>`).join('')}</div></div>`:''}</div>
-<div class="lbox"><div><h2>Connexion</h2><p class="sub">Accédez à votre espace Mens Sana.</p><form data-f="login"><label>E-mail</label><input name="email" type="email" required autocomplete="username"><label>Mot de passe</label><input name="password" type="password" required autocomplete="current-password"><button class="btn" style="width:100%;margin-top:18px">Se connecter</button></form><div class="public-actions"><button class="btn g" data-a="showSignup">Créer un compte</button><button class="btn g" data-a="showPartners">Voir les partenaires</button></div></div></div></div>`}
+const plist=(partners||[]).slice(0,8).map(p=>`<span class="login-partner-item">${p.logo_url?`<img src="${esc(p.logo_url)}" alt="${esc(p.nom)}" referrerpolicy="no-referrer">`:''}<span>${esc(p.nom)}</span></span>`).join('');
+$('#app').innerHTML=`<div class="login">
+  <div class="hero">
+    <div class="lg"><img src="/logo-connexion.jpeg" alt="Mens Sana — De l'enfermement intérieur à la liberté d'être"></div>
+    <h1>Prendre soin de l'esprit des jeunes, avec leurs proches.</h1>
+    <p>Suivi psychologique, ateliers et accompagnement des jeunes au Sénégal, avec un espace dédié aux parents, parrains et partenaires.</p>
+    <div class="pills"><span>Consentement et confidentialité</span><span>Journal d'audit</span><span>Rôles et accès contrôlés</span></div>
+    <div class="login-partners"><div class="partners-title">NOS PARTENAIRES</div><div class="login-partner-list">${plist||'<span class="login-partner-item"><span>Partenaires à venir</span></span>'}</div></div>
+  </div>
+  <div class="lbox"><div class="login-form-wrap">
+    <h2>Connexion</h2>
+    <p class="sub">Accédez à votre espace Mens Sana.</p>
+    <form data-f="login">
+      <label for="login-email">Adresse e-mail</label>
+      <input id="login-email" name="email" type="email" required autocomplete="username">
+      <label for="login-password">Mot de passe</label>
+      <input id="login-password" name="password" type="password" required autocomplete="current-password">
+      <button class="btn login-submit" type="submit">Se connecter</button>
+    </form>
+    <p class="login-links">Patient, parent ou parrain ? <a href="#" data-a="showSignup"><strong>Créer un compte</strong></a> · <a href="#" data-a="showPartners">Nos partenaires</a></p>
+    <p class="login-note">Psychologues, personnalités et partenaires : votre compte est créé par l'administration, utilisez les identifiants reçus.</p>
+  </div></div>
+</div>`}
 function inscriptionView(){$('#app').innerHTML=`<div class="public-page"><header><img src="/mark.webp" alt=""><b>Mens Sana</b><button class="btn g s" data-a="backLogin">Retour à la connexion</button></header><main><h1>Créer mon compte</h1><p class="sub">Les comptes patient, parent/tuteur et parrain peuvent être créés ici. Les psychologues, personnalités et partenaires sont ajoutés par l’administrateur.</p><form class="card public-form" data-f="signup"><label>Je suis</label><select name="role" required><option value="patient">Patient</option><option value="parent">Parent ou tuteur (d’un mineur)</option><option value="parrain">Parrain (d’un mineur)</option></select><label>Nom complet</label><input name="nom" maxlength="120" required><label>E-mail</label><input name="email" type="email" autocomplete="email" required><div data-signup-fields="patient"><label>Date de naissance</label><input name="date_naissance" type="date" max="${new Date().toISOString().slice(0,10)}" required></div><label>Mot de passe (10 caractères minimum)</label><input name="password" type="password" minlength="10" autocomplete="new-password" required><button class="btn" style="margin-top:18px">Créer mon compte</button></form></main></div>`}
 /* ---------- structure ---------- */
 function shell(){const n=[...NAV[me.role]||[], ...(me.role==='admin'?[['conf','Sécurité & limites']]:[])];
