@@ -15,13 +15,13 @@
   --navy:var(--bleu-nuit);
   --blue:var(--bleu);
   --cyan:#19b5e2;
-  --peach:#ecd3c0;
+  --peach:#c9dcec;
   --peach-soft:var(--bleu-pale);
   --bg:#fff;
   --card:#fff;
   --ink:#26333a;
   --mute:#5d6b7a;
-  --line:#eadbd3;
+  --line:#d7e3ee;
   --ok:var(--succes);
   --err:var(--danger);
   --gold:var(--bleu-nuit);
@@ -108,11 +108,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .side button.on{background:var(--cyan);color:#06243f;font-weight:700}
 .who{margin-top:auto;border-top:1px solid rgba(255,255,255,.22);padding:14px 8px 0;font-size:13px}
 .who b{display:block;color:#fff}
-.logout-link{padding:8px 0;margin-top:6px;color:#9fd4ee;background:none;border:0;text-align:left;cursor:pointer;min-height:44px}
+.logout-link{padding:8px 0;margin-top:6px;color:#bfe6f7;background:none;border:0;text-align:left;cursor:pointer;min-height:44px}
 .main{padding:34px 40px;max-width:1100px;min-width:0}
 .sub{color:var(--mute);margin:0 0 22px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:0 1px 2px rgba(10,47,92,.05);min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:0 2px 8px rgba(10,47,92,.04);min-width:0}
 .card+.card{margin-top:0}
 .k{font-size:13px;font-weight:700;color:var(--mute);margin-bottom:6px}
 .big{font:700 30px Georgia,serif;color:var(--bleu-nuit)}
@@ -153,14 +153,26 @@ fieldset{border:0;padding:0;margin:16px 0}
 .public-page main{max-width:1120px;margin:0 auto;padding:42px 24px}
 .public-page main>h1{font-size:36px;margin-bottom:8px;color:var(--bleu-nuit)}
 .public-form{max-width:620px}
-.partner-filters{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 22px}
-.filter-chip{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:99px;padding:8px 14px;cursor:pointer;min-height:44px}
-.filter-chip.active{background:var(--bleu-pale);border-color:var(--bleu-bord);color:var(--bleu);font-weight:700}
-.partner-grid .partner-card{display:flex;flex-direction:column;align-items:flex-start;gap:10px}
-.partner-logo{width:100%;height:100px;object-fit:contain;object-position:left center}
-.partner-card h2{font-size:22px;margin:0}
-.partner-card p{margin:0;color:var(--mute);flex:1}
-.partner-card a{font-weight:700}
+.partner-filters{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 26px}
+.filter-chip{border:1px solid var(--bleu-bord);background:#fff;color:var(--bleu-nuit);border-radius:999px;padding:8px 16px;cursor:pointer;min-height:44px;font-weight:600}
+.filter-chip:hover{background:var(--bleu-pale)}
+.filter-chip.active{background:var(--bleu);border-color:var(--bleu);color:#fff;font-weight:700}
+.partner-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.partner-card{display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:22px;border:1px solid var(--line);border-radius:20px;background:#fff;box-shadow:0 4px 16px rgba(10,47,92,.06)}
+.partner-logo-wrap{width:100%;height:120px;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,var(--bleu-pale),#fff);border:1px solid var(--bleu-bord);border-radius:14px;padding:14px}
+.partner-logo{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+.partner-card .tag{margin-top:2px}
+.partner-card h2,.partner-card h3{font-size:22px;margin:0;color:var(--bleu-nuit);line-height:1.2}
+.partner-card p{margin:0;color:var(--mute);flex:1;line-height:1.55}
+.partner-card a{font-weight:700;color:var(--bleu);text-decoration:none;display:inline-flex;align-items:center;gap:6px;min-height:44px}
+.partner-card a:hover{text-decoration:underline}
+.partner-admin-grid{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;align-items:start}
+.partner-admin-card{display:flex;flex-direction:column;gap:12px}
+.partner-admin-card .partner-logo{height:90px;object-fit:contain;align-self:center}
+.partner-edit{margin-top:4px}
+.partner-actions{display:flex;gap:10px;flex-wrap:wrap;grid-column:1/-1;align-items:end}
+.public-page{background:linear-gradient(180deg,#f4f8fc 0%,#fff 220px)}
+.public-page header{border-bottom:1px solid var(--line);background:#fff}
 .support-card{border-left:4px solid var(--bleu)}
 .receipt{max-width:580px;margin:auto}
 .receipt>img{display:block;width:180px;max-height:90px;object-fit:contain;margin:0 auto 18px}
