@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS seances(id INTEGER PRIMARY KEY, rdv_id INTEGER UNIQUE
 CREATE TABLE IF NOT EXISTS programmes(id INTEGER PRIMARY KEY, nom TEXT, description TEXT);
 CREATE TABLE IF NOT EXISTS programme_psy(programme_id INTEGER, psy_id INTEGER, PRIMARY KEY(programme_id,psy_id));
 CREATE TABLE IF NOT EXISTS evaluations(id INTEGER PRIMARY KEY, patient_id INTEGER, medecin_id INTEGER, etat TEXT, programme_id INTEGER, date TEXT);
+CREATE TABLE IF NOT EXISTS plans_suivi(id INTEGER PRIMARY KEY, patient_id INTEGER REFERENCES patients(id), psy_id INTEGER REFERENCES psychologues(id), titre TEXT NOT NULL, objectifs TEXT, statut TEXT DEFAULT 'en_cours', maj TEXT);
 CREATE TABLE IF NOT EXISTS abonnements(id INTEGER PRIMARY KEY, patient_id INTEGER, formule TEXT, debut TEXT, fin TEXT, statut TEXT DEFAULT 'actif');
 CREATE TABLE IF NOT EXISTS paiements(id INTEGER PRIMARY KEY, abonnement_id INTEGER, payeur_id INTEGER, montant INTEGER, methode TEXT, statut TEXT, ref TEXT, date TEXT);
 CREATE TABLE IF NOT EXISTS communautes(id INTEGER PRIMARY KEY, nom TEXT, description TEXT);
@@ -147,6 +148,9 @@ def ensure_schema():
         try: c.execute("ALTER TABLE rendez_vous ADD COLUMN duree INTEGER DEFAULT 60")
         except Exception: pass
         try: c.execute("ALTER TABLE patients ADD COLUMN sexe TEXT DEFAULT ''")
+        except Exception: pass
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS plans_suivi(id INTEGER PRIMARY KEY, patient_id INTEGER REFERENCES patients(id), psy_id INTEGER REFERENCES psychologues(id), titre TEXT NOT NULL, objectifs TEXT, statut TEXT DEFAULT 'en_cours', maj TEXT)")
         except Exception: pass
         c.commit()
     finally:
@@ -313,7 +317,10 @@ def suivi(pid, clinique=True):
     ateliers = q('SELECT a.titre,a.type,a.date_heure FROM atelier_inscriptions i JOIN ateliers a ON a.id=i.atelier_id WHERE i.patient_id=? ORDER BY a.date_heure', (pid,))
     groupes = q('SELECT g.nom FROM groupe_membres m JOIN groupes g ON g.id=m.groupe_id WHERE m.patient_id=?', (pid,))
     evals = q('SELECT e.date,e.etat,p.nom programme FROM evaluations e LEFT JOIN programmes p ON p.id=e.programme_id WHERE e.patient_id=? ORDER BY e.id DESC', (pid,)) if clinique else []
-    # timeline (for patient/parent views)
+    try:
+        plans = q('SELECT ps.titre, ps.objectifs, ps.statut, ps.maj, u.nom psy FROM plans_suivi ps LEFT JOIN psychologues y ON y.id=ps.psy_id LEFT JOIN users u ON u.id=y.user_id WHERE ps.patient_id=? ORDER BY ps.maj DESC, ps.id DESC', (pid,))
+    except Exception:
+        plans = []
     tl = []
     for r in rdv:
         if r.get('date_heure'):
@@ -321,6 +328,8 @@ def suivi(pid, clinique=True):
     for a2 in ateliers:
         if a2.get('date_heure'):
             tl.append({'ts': a2['date_heure'], 'type': 'atelier', 'title': 'Atelier : ' + (a2.get('titre') or ''), 'detail': a2.get('type') or ''})
+    for pl in plans:
+        tl.append({'ts': pl.get('maj') or '', 'type': 'plan', 'title': 'Plan de suivi : ' + (pl.get('titre') or ''), 'detail': (pl.get('statut') or '') + (' — ' + (pl.get('objectifs') or '') if pl.get('objectifs') else '')})
     try:
         pays = q('SELECT date, montant, statut, formule FROM paiements WHERE abonnement_id IN (SELECT id FROM abonnements WHERE patient_id=?) ORDER BY date DESC', (pid,))
     except Exception:
@@ -335,7 +344,7 @@ def suivi(pid, clinique=True):
         tl.sort(key=lambda x: x.get('ts') or '', reverse=True)
     except Exception:
         pass
-    return {'rdv': rdv, 'ateliers': ateliers, 'groupes': groupes, 'evaluations': evals, 'abonnement': a, 'abonnement_message': msg, 'seance_realisee': patient_a_seance_realisee(pid), 'timeline': tl[:30]}
+    return {'rdv': rdv, 'ateliers': ateliers, 'groupes': groupes, 'evaluations': evals, 'plans': plans, 'abonnement': a, 'abonnement_message': msg, 'seance_realisee': patient_a_seance_realisee(pid), 'timeline': tl[:30]}
 
 def fiche(u, pid):
     p = q('SELECT p.id,p.numero,p.date_naissance,p.famille,u.nom FROM patients p JOIN users u ON u.id=p.user_id WHERE p.id=?', (pid,), True)
@@ -452,6 +461,36 @@ def me(u, b): return {'id': u['id'], 'nom': u['nom'], 'role': u['role']}
 
 @route('GET', '/formules')
 def formules(u, b): return {'formules': FORMULES, 'methodes': METHODES, 'tarif_seance': tarif_seance()}
+
+@route('GET', '/psy/plans', ['psychologue'])
+def psy_plans(u, b):
+    p = q('SELECT a.patient_id, u.nom, u.email FROM assignments a JOIN patients pt ON pt.id=a.patient_id JOIN users u ON u.id=pt.user_id WHERE a.psy_id=? AND a.fin IS NULL ORDER BY u.nom', (psy_id(u),))
+    plans = q('SELECT ps.id, ps.patient_id, ps.titre, ps.objectifs, ps.statut, ps.maj, u.nom patient FROM plans_suivi ps JOIN patients pt ON pt.id=ps.patient_id JOIN users u ON u.id=pt.user_id WHERE ps.psy_id=? ORDER BY ps.maj DESC, ps.id DESC', (psy_id(u),))
+    return {'patients': p, 'plans': plans}
+
+@route('POST', '/psy/plans', ['psychologue'])
+def psy_plan_create(u, b):
+    pid = b.get('patient_id')
+    titre = str(b.get('titre','')).strip()[:200]
+    objectifs = str(b.get('objectifs','')).strip()[:4000]
+    statut = str(b.get('statut','en_cours')).strip()
+    if statut not in ('en_cours','atteint','suspendu'): statut = 'en_cours'
+    if not isinstance(pid,int) or not titre: raise Err('Patient et titre requis')
+    assert_pu(u, pid)
+    x('INSERT INTO plans_suivi(patient_id,psy_id,titre,objectifs,statut,maj) VALUES(?,?,?,?,?,?)', (pid, psy_id(u), titre, objectifs, statut, now()))
+    return {'ok':1}
+
+@route('POST', '/psy/plans/(\\d+)', ['psychologue'])
+def psy_plan_update(u, b, plan_id):
+    row = q('SELECT * FROM plans_suivi WHERE id=?', (int(plan_id),), True)
+    if not row or row['psy_id'] != psy_id(u): raise Err('Plan introuvable', 404)
+    titre = str(b.get('titre', row['titre'])).strip()[:200]
+    objectifs = str(b.get('objectifs', row.get('objectifs') or '')).strip()[:4000]
+    statut = str(b.get('statut', row.get('statut') or 'en_cours')).strip()
+    if statut not in ('en_cours','atteint','suspendu'): statut = 'en_cours'
+    if not titre: raise Err('Titre requis')
+    x('UPDATE plans_suivi SET titre=?, objectifs=?, statut=?, maj=? WHERE id=?', (titre, objectifs, statut, now(), int(plan_id)))
+    return {'ok':1}
 
 @route('GET', '/psychologues')
 def psychologues(u, b):
